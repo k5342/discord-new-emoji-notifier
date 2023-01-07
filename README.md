@@ -1,6 +1,9 @@
 # discord-new-emoji-notifier
 A simple discord bot to notify new emojis
 
+## Example
+![](https://user-images.githubusercontent.com/1993005/211133828-516fe67d-e295-42b1-bdf3-3d4095c1bdf9.png)
+
 ## Installation & Run
 ```
 cp .env{.example,}
@@ -21,7 +24,7 @@ https://discord.com/oauth2/authorize?client_id=<client_id>&scope=bot&permissions
   - currently we need to define notification channel id statically in this code
   - to make this configurable, we need to ensure a invitation command to select channel and persistent the configuration as a file
 
-## Degign
+## Design
 To group notifications each polling window, this implementation follows Producer-Consumer pattern
 
 ### Producers: watch gateway event and register notification queue
