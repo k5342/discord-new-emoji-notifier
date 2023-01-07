@@ -1,6 +1,9 @@
 # discord-new-emoji-notifier
 A simple discord bot to notify new emojis
 
+## Example
+![](https://user-images.githubusercontent.com/1993005/211133828-516fe67d-e295-42b1-bdf3-3d4095c1bdf9.png)
+
 ## Installation & Run
 ```
 cp .env{.example,}
