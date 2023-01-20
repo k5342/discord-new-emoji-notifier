@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,10 +45,11 @@ func (es EmojiState) checkExists(emoji *discordgo.Emoji) bool {
 }
 
 type DiscordBot struct {
-	config             BotConfig
+	config             *BotConfig
 	session            *discordgo.Session
 	guildID2EmojiState map[string]EmojiState
 	notifyWorkerChan   chan NotifyRequest
+	registeredCommands []*discordgo.ApplicationCommand
 }
 
 type NotifyRequest struct {
@@ -56,15 +58,59 @@ type NotifyRequest struct {
 }
 
 type BotConfig struct {
+	sync.RWMutex
 	botToken                   string
+	configFileToChannelList    string
 	guildID2notifyChannelIDMap map[string]string
 	notifyWindow               time.Duration
 }
 
-func launchDiscordBot(config BotConfig) (*DiscordBot, error) {
+func (bc *BotConfig) restoreChannelIDsFromFile() error {
+	bc.Lock()
+	defer bc.Unlock()
+	var channelIDMap map[string]string
+	_, err := os.Stat(bc.configFileToChannelList)
+	if err != nil {
+		// file is not found
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	bytes, err := os.ReadFile(bc.configFileToChannelList)
+	if err != nil {
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	err = json.Unmarshal(bytes, &channelIDMap)
+	if err != nil {
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	bc.guildID2notifyChannelIDMap = channelIDMap
+	return nil
+}
+
+func (bc *BotConfig) persistChannelIDsToFile() error {
+	bc.RLock()
+	defer bc.RUnlock()
+	bytes, err := json.Marshal(bc.guildID2notifyChannelIDMap)
+	if err != nil {
+		return nil
+	}
+	err = os.WriteFile(bc.configFileToChannelList, bytes, 0644)
+	if err != nil {
+		return nil
+	}
+	return nil
+}
+
+func launchDiscordBot(config *BotConfig) (*DiscordBot, error) {
 	dg, err := discordgo.New("Bot " + config.botToken)
 	if err != nil {
 		return nil, err
+	}
+	err = config.restoreChannelIDsFromFile()
+	if err != nil {
+		logger.Sugar().Warn("failed on restore channel ids", err)
 	}
 	emojiStateMap := make(map[string]EmojiState)
 	bot := &DiscordBot{
@@ -107,7 +153,70 @@ func launchDiscordBot(config BotConfig) (*DiscordBot, error) {
 		}
 	})
 
+	// handler for slash commands to setup/remove notification channel in a guild
+	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		var msg string
+		commandName := i.ApplicationCommandData().Name
+		switch commandName {
+		case "register":
+			err := bot.registerNotificationChannel(i.GuildID, i.ChannelID)
+			if err == nil {
+				msg = "okay, I will notify here for new emojis!"
+			} else {
+				msg = fmt.Sprintf("hmm, something went to wrong: %s", err)
+			}
+		case "unregister":
+			err := bot.unregisterNotificationChannel(i.GuildID, i.ChannelID)
+			if err == nil {
+				msg = "unregistered!"
+			} else {
+				msg = fmt.Sprintf("hmm, something went to wrong: %s", err)
+			}
+		default:
+			msg = "invalid command :("
+		}
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: msg,
+			},
+		})
+		if err != nil {
+			logger.Sugar().Error(err)
+		}
+	})
+
+	bot.registerSlashCommands()
+
 	return bot, err
+}
+
+func (bot DiscordBot) registerNotificationChannel(guildID string, channelID string) error {
+	// check whether the given channel is accessible via bot's permission or not
+	_, err := bot.session.Channel(channelID)
+	if err != nil {
+		return fmt.Errorf("could not find out the channel you've requested (might be wrong permissions?)")
+	}
+	bot.config.Lock()
+	defer bot.config.Unlock()
+	bot.config.guildID2notifyChannelIDMap[guildID] = channelID
+	logger.Sugar().Infof("registered: guild %s -> channel %s", guildID, channelID)
+	return nil
+}
+
+func (bot DiscordBot) unregisterNotificationChannel(guildID string, channelID string) error {
+	bot.config.Lock()
+	defer bot.config.Unlock()
+	cid, ok := bot.config.guildID2notifyChannelIDMap[guildID]
+	if !ok {
+		return fmt.Errorf("no channel registered")
+	}
+	if cid != channelID {
+		return fmt.Errorf("this channel is not registered as the notification channel")
+	}
+	delete(bot.config.guildID2notifyChannelIDMap, guildID)
+	logger.Sugar().Infof("unregistered: guild %s: remove channel %s", guildID, channelID)
+	return nil
 }
 
 func (bot DiscordBot) pushEmojiToQueue(guildID string, emoji *discordgo.Emoji) {
@@ -119,7 +228,9 @@ func (bot DiscordBot) pushEmojiToQueue(guildID string, emoji *discordgo.Emoji) {
 }
 
 func (bot DiscordBot) getNotifyChannelIDFromGuildID(guildID string) (string, bool) {
+	bot.config.RLock()
 	id, ok := bot.config.guildID2notifyChannelIDMap[guildID]
+	bot.config.RUnlock()
 	return id, ok
 }
 
@@ -130,6 +241,49 @@ func (bot DiscordBot) getGuildByID(guildID string) (*discordgo.Guild, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (bot DiscordBot) registerSlashCommands() {
+	// TODO: set default permission for register/unregister command to limit access to moderators who can edit channels only
+	var permission int64
+	// if we use default permissions below, it does not consider implicit permissions such as the owner permissions.
+	// as a result, this requires that guild owner must join something dedicated role to get these permissions explicitly.
+	// we don't need to define a default permission here for now because slash command can be limited using guild's permission.
+	// permission |= discordgo.PermissionAdministrator
+	// permission |= discordgo.PermissionManageChannels
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:                     "register",
+			Description:              "make this channel to a notification channel",
+			DefaultMemberPermissions: &permission,
+		},
+		{
+			Name:                     "unregister",
+			Description:              "stop to notify here",
+			DefaultMemberPermissions: &permission,
+		},
+	}
+	bot.registeredCommands = make([]*discordgo.ApplicationCommand, len(commands))
+	for idx, val := range commands {
+		registered, err := bot.session.ApplicationCommandCreate(bot.session.State.User.ID, "", val)
+		if err == nil {
+			logger.Sugar().Infof("created a command '%#v'", val.Name)
+		} else {
+			logger.Sugar().Errorf("cannot create command '%#v': %#v", val.Name, err)
+		}
+		bot.registeredCommands[idx] = registered
+	}
+}
+
+func (bot DiscordBot) unregisterSlashCommands() {
+	for _, val := range bot.registeredCommands {
+		err := bot.session.ApplicationCommandDelete(bot.session.State.User.ID, "", val.ID)
+		if err == nil {
+			logger.Sugar().Infof("deleted a command: %s", val.Name)
+		} else {
+			logger.Sugar().Errorf("cannot delete command %s: %v", val.Name, err)
+		}
+	}
 }
 
 type NotifyWorker struct {
@@ -255,6 +409,11 @@ func (bot DiscordBot) notifyNewEmoji(guildID string, emojis []*discordgo.Emoji) 
 }
 
 func (bot DiscordBot) closeDiscordBot() {
+	err := bot.config.persistChannelIDsToFile()
+	if err != nil {
+		logger.Sugar().Error("failed on persist channel ids", err)
+	}
+	bot.unregisterSlashCommands()
 	bot.session.Close()
 }
 
@@ -278,16 +437,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: make this configurale by a slack command
 	config := BotConfig{
-		botToken: botToken,
-		guildID2notifyChannelIDMap: map[string]string{
-			"412059076449533974": "761560679018004521",  // ksswre
-			"786887293322788874": "1060908636345470986", // rougai
-		},
-		notifyWindow: 5 * time.Minute,
+		botToken:                botToken,
+		configFileToChannelList: "./channels.json",
+		notifyWindow:            5 * time.Minute,
 	}
-	bot, _ := launchDiscordBot(config)
+	bot, _ := launchDiscordBot(&config)
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc

@@ -17,11 +17,11 @@ An invitation link is formatted as here; using client_id you can get from Discor
 https://discord.com/oauth2/authorize?client_id=<client_id>&scope=bot&permissions=2048
 ```
 
+After joining to your server, use `/register` command at a channel where you want the bot to notify new emojis to register as a notification channel.
+use `/unregister` command to remove from notification list.
+
 ## TODO(s)
 - rename to a cool name (current: discord-new-emoji-notifier)
-- make a notification channel configurable
-  - currently we need to define notification channel id statically in this code
-  - to make this configurable, we need to ensure a invitation command to select channel and persistent the configuration as a file
 
 ## Design
 To group notifications each polling window, this implementation follows Producer-Consumer pattern
