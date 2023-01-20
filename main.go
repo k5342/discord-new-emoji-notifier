@@ -48,6 +48,7 @@ type DiscordBot struct {
 	session            *discordgo.Session
 	guildID2EmojiState map[string]EmojiState
 	notifyWorkerChan   chan NotifyRequest
+	registeredCommands []*discordgo.ApplicationCommand
 }
 
 type NotifyRequest struct {
@@ -107,6 +108,8 @@ func launchDiscordBot(config BotConfig) (*DiscordBot, error) {
 		}
 	})
 
+	bot.registerSlashCommands()
+
 	return bot, err
 }
 
@@ -130,6 +133,40 @@ func (bot DiscordBot) getGuildByID(guildID string) (*discordgo.Guild, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (bot DiscordBot) registerSlashCommands() {
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "register",
+			Description: "make this channel to a notification channel",
+		},
+		{
+			Name:        "unregister",
+			Description: "stop to notify here",
+		},
+	}
+	bot.registeredCommands = make([]*discordgo.ApplicationCommand, len(commands))
+	for idx, val := range commands {
+		registered, err := bot.session.ApplicationCommandCreate(bot.session.State.User.ID, "", val)
+		if err == nil {
+			logger.Sugar().Infof("created a command '%#v'", val.Name)
+		} else {
+			logger.Sugar().Errorf("cannot create command '%#v': %#v", val.Name, err)
+		}
+		bot.registeredCommands[idx] = registered
+	}
+}
+
+func (bot DiscordBot) unregisterSlashCommands() {
+	for _, val := range bot.registeredCommands {
+		err := bot.session.ApplicationCommandDelete(bot.session.State.User.ID, "", val.ID)
+		if err == nil {
+			logger.Sugar().Infof("deleted a command: %s", val.Name)
+		} else {
+			logger.Sugar().Errorf("cannot delete command %s: %v", val.Name, err)
+		}
+	}
 }
 
 type NotifyWorker struct {
@@ -255,6 +292,7 @@ func (bot DiscordBot) notifyNewEmoji(guildID string, emojis []*discordgo.Emoji) 
 }
 
 func (bot DiscordBot) closeDiscordBot() {
+	bot.unregisterSlashCommands()
 	bot.session.Close()
 }
 
@@ -288,8 +326,8 @@ func main() {
 		notifyWindow: 5 * time.Minute,
 	}
 	bot, _ := launchDiscordBot(config)
+	defer bot.closeDiscordBot()
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
-	bot.closeDiscordBot()
 }
