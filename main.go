@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -59,14 +60,57 @@ type NotifyRequest struct {
 type BotConfig struct {
 	sync.RWMutex
 	botToken                   string
+	configFileToChannelList    string
 	guildID2notifyChannelIDMap map[string]string
 	notifyWindow               time.Duration
+}
+
+func (bc *BotConfig) restoreChannelIDsFromFile() error {
+	bc.Lock()
+	defer bc.Unlock()
+	var channelIDMap map[string]string
+	_, err := os.Stat(bc.configFileToChannelList)
+	if err != nil {
+		// file is not found
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	bytes, err := os.ReadFile(bc.configFileToChannelList)
+	if err != nil {
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	err = json.Unmarshal(bytes, &channelIDMap)
+	if err != nil {
+		bc.guildID2notifyChannelIDMap = map[string]string{}
+		return err
+	}
+	bc.guildID2notifyChannelIDMap = channelIDMap
+	return nil
+}
+
+func (bc *BotConfig) persistChannelIDsToFile() error {
+	bc.RLock()
+	defer bc.RUnlock()
+	bytes, err := json.Marshal(bc.guildID2notifyChannelIDMap)
+	if err != nil {
+		return nil
+	}
+	err = os.WriteFile(bc.configFileToChannelList, bytes, 0644)
+	if err != nil {
+		return nil
+	}
+	return nil
 }
 
 func launchDiscordBot(config *BotConfig) (*DiscordBot, error) {
 	dg, err := discordgo.New("Bot " + config.botToken)
 	if err != nil {
 		return nil, err
+	}
+	err = config.restoreChannelIDsFromFile()
+	if err != nil {
+		logger.Sugar().Warn("failed on restore channel ids", err)
 	}
 	emojiStateMap := make(map[string]EmojiState)
 	bot := &DiscordBot{
@@ -365,6 +409,10 @@ func (bot DiscordBot) notifyNewEmoji(guildID string, emojis []*discordgo.Emoji) 
 }
 
 func (bot DiscordBot) closeDiscordBot() {
+	err := bot.config.persistChannelIDsToFile()
+	if err != nil {
+		logger.Sugar().Error("failed on persist channel ids", err)
+	}
 	bot.unregisterSlashCommands()
 	bot.session.Close()
 }
@@ -389,14 +437,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: make this configurale by a slack command
 	config := BotConfig{
-		botToken: botToken,
-		guildID2notifyChannelIDMap: map[string]string{
-			"412059076449533974": "761560679018004521",  // ksswre
-			"786887293322788874": "1060908636345470986", // rougai
-		},
-		notifyWindow: 5 * time.Minute,
+		botToken:                botToken,
+		configFileToChannelList: "./channels.json",
+		notifyWindow:            5 * time.Minute,
 	}
 	bot, _ := launchDiscordBot(&config)
 	sc := make(chan os.Signal, 1)
