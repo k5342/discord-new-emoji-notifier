@@ -200,7 +200,11 @@ func launchNotifyWorker(bot *DiscordBot) (c chan NotifyRequest) {
 							i += 1
 						}
 					}
-					bot.notifyNewEmoji(guildID, uniqueEmojis)
+					err := bot.notifyNewEmoji(guildID, uniqueEmojis)
+					if err != nil {
+						logger.Sugar().Warnf("failed on notifyNewEmoji: %s", err)
+						continue
+					}
 					worker.notifyQueue.clearQueue(guildID)
 				}
 				worker.Unlock()
@@ -243,26 +247,15 @@ func (bot DiscordBot) notifyNewEmoji(guildID string, emojis []*discordgo.Emoji) 
 		},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	bot.session.ChannelMessageSendEmbed(channelID, embed)
+	_, err := bot.session.ChannelMessageSendEmbed(channelID, embed)
+	if err != nil {
+		return fmt.Errorf("failed on ChannelMessageSendEmbed: %s", err)
+	}
 	return nil
 }
 
 func (bot DiscordBot) closeDiscordBot() {
 	bot.session.Close()
-}
-
-func getEmojiImageURLFromEmojiID(emoji *discordgo.Emoji) (string, error) {
-	var result string
-	if emoji == nil {
-		return "", fmt.Errorf("emoji must not be nil")
-	}
-	if emoji.Animated {
-		result = fmt.Sprintf("https://cdn.discordapp.com/emojis/%s.gif", emoji.ID)
-	} else {
-		result = fmt.Sprintf("https://cdn.discordapp.com/emojis/%s.png", emoji.ID)
-	}
-	logger.Sugar().Infof("Emoji URL is: %s", result)
-	return result, nil
 }
 
 func main() {
