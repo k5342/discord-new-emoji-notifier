@@ -399,8 +399,8 @@ func main() {
 		notifyWindow: 5 * time.Minute,
 	}
 	bot, _ := launchDiscordBot(&config)
-	defer bot.closeDiscordBot()
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
+	bot.closeDiscordBot()
 }
