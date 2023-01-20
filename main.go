@@ -148,16 +148,30 @@ func launchDiscordBot(config *BotConfig) (*DiscordBot, error) {
 }
 
 func (bot DiscordBot) registerNotificationChannel(guildID string, channelID string) error {
+	// check whether the given channel is accessible via bot's permission or not
+	_, err := bot.session.Channel(channelID)
+	if err != nil {
+		return fmt.Errorf("could not find out the channel you've requested (might be wrong permissions?)")
+	}
 	bot.config.Lock()
+	defer bot.config.Unlock()
 	bot.config.guildID2notifyChannelIDMap[guildID] = channelID
-	bot.config.Unlock()
+	logger.Sugar().Infof("registered: guild %s -> channel %s", guildID, channelID)
 	return nil
 }
 
 func (bot DiscordBot) unregisterNotificationChannel(guildID string, channelID string) error {
 	bot.config.Lock()
+	defer bot.config.Unlock()
+	cid, ok := bot.config.guildID2notifyChannelIDMap[guildID]
+	if !ok {
+		return fmt.Errorf("no channel registered")
+	}
+	if cid != channelID {
+		return fmt.Errorf("this channel is not registered as the notification channel")
+	}
 	delete(bot.config.guildID2notifyChannelIDMap, guildID)
-	bot.config.Unlock()
+	logger.Sugar().Infof("unregistered: guild %s: remove channel %s", guildID, channelID)
 	return nil
 }
 
