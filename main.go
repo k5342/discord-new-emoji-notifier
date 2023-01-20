@@ -44,7 +44,7 @@ func (es EmojiState) checkExists(emoji *discordgo.Emoji) bool {
 }
 
 type DiscordBot struct {
-	config             BotConfig
+	config             *BotConfig
 	session            *discordgo.Session
 	guildID2EmojiState map[string]EmojiState
 	notifyWorkerChan   chan NotifyRequest
@@ -57,12 +57,13 @@ type NotifyRequest struct {
 }
 
 type BotConfig struct {
+	sync.RWMutex
 	botToken                   string
 	guildID2notifyChannelIDMap map[string]string
 	notifyWindow               time.Duration
 }
 
-func launchDiscordBot(config BotConfig) (*DiscordBot, error) {
+func launchDiscordBot(config *BotConfig) (*DiscordBot, error) {
 	dg, err := discordgo.New("Bot " + config.botToken)
 	if err != nil {
 		return nil, err
@@ -108,9 +109,56 @@ func launchDiscordBot(config BotConfig) (*DiscordBot, error) {
 		}
 	})
 
+	// handler for slash commands to setup/remove notification channel in a guild
+	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		var msg string
+		commandName := i.ApplicationCommandData().Name
+		switch commandName {
+		case "register":
+			err := bot.registerNotificationChannel(i.GuildID, i.ChannelID)
+			if err == nil {
+				msg = "okay, I will notify here for new emojis!"
+			} else {
+				msg = fmt.Sprintf("hmm, something went to wrong: %s", err)
+			}
+		case "unregister":
+			err := bot.unregisterNotificationChannel(i.GuildID, i.ChannelID)
+			if err == nil {
+				msg = "unregistered!"
+			} else {
+				msg = fmt.Sprintf("hmm, something went to wrong: %s", err)
+			}
+		default:
+			msg = "invalid command :("
+		}
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: msg,
+			},
+		})
+		if err != nil {
+			logger.Sugar().Error(err)
+		}
+	})
+
 	bot.registerSlashCommands()
 
 	return bot, err
+}
+
+func (bot DiscordBot) registerNotificationChannel(guildID string, channelID string) error {
+	bot.config.Lock()
+	bot.config.guildID2notifyChannelIDMap[guildID] = channelID
+	bot.config.Unlock()
+	return nil
+}
+
+func (bot DiscordBot) unregisterNotificationChannel(guildID string, channelID string) error {
+	bot.config.Lock()
+	delete(bot.config.guildID2notifyChannelIDMap, guildID)
+	bot.config.Unlock()
+	return nil
 }
 
 func (bot DiscordBot) pushEmojiToQueue(guildID string, emoji *discordgo.Emoji) {
@@ -122,7 +170,9 @@ func (bot DiscordBot) pushEmojiToQueue(guildID string, emoji *discordgo.Emoji) {
 }
 
 func (bot DiscordBot) getNotifyChannelIDFromGuildID(guildID string) (string, bool) {
+	bot.config.RLock()
 	id, ok := bot.config.guildID2notifyChannelIDMap[guildID]
+	bot.config.RUnlock()
 	return id, ok
 }
 
@@ -325,7 +375,7 @@ func main() {
 		},
 		notifyWindow: 5 * time.Minute,
 	}
-	bot, _ := launchDiscordBot(config)
+	bot, _ := launchDiscordBot(&config)
 	defer bot.closeDiscordBot()
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
