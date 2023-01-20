@@ -200,14 +200,23 @@ func (bot DiscordBot) getGuildByID(guildID string) (*discordgo.Guild, bool) {
 }
 
 func (bot DiscordBot) registerSlashCommands() {
+	// TODO: set default permission for register/unregister command to limit access to moderators who can edit channels only
+	var permission int64
+	// if we use default permissions below, it does not consider implicit permissions such as the owner permissions.
+	// as a result, this requires that guild owner must join something dedicated role to get these permissions explicitly.
+	// we don't need to define a default permission here for now because slash command can be limited using guild's permission.
+	// permission |= discordgo.PermissionAdministrator
+	// permission |= discordgo.PermissionManageChannels
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "register",
-			Description: "make this channel to a notification channel",
+			Name:                     "register",
+			Description:              "make this channel to a notification channel",
+			DefaultMemberPermissions: &permission,
 		},
 		{
-			Name:        "unregister",
-			Description: "stop to notify here",
+			Name:                     "unregister",
+			Description:              "stop to notify here",
+			DefaultMemberPermissions: &permission,
 		},
 	}
 	bot.registeredCommands = make([]*discordgo.ApplicationCommand, len(commands))
