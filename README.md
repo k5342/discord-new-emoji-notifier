@@ -28,11 +28,11 @@ use `/unregister` command to remove from notification list.
 ## Design
 To group notifications each polling window, this implementation follows Producer-Consumer pattern
 
-### Producers: watch gateway event and register notification queue
+### Producer: watch gateway event and register notification queue
 1. Watch GuildEmojiUpdate sent from Gateway Event
 1. Triggers pushEmojiToQueue() to push notifyRequest
 
-### Consumers: send a notification on new emojis to a pre-defined channel
+### Consumer: send a notification on new emojis to a pre-defined channel
 1. Get the notifyRequest pushed by the producer
 1. Register the notifyRequest to a notifyQueue
 1. (every N minutes) Get requests from the notifyQueue and send a message to the channel
